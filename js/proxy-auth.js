@@ -22,12 +22,22 @@ async function getPasswordHash() {
     }
     
     // 2. 尝试从密码验证状态获取（password.js 验证后存储的哈希）
-    const passwordVerified = localStorage.getItem('passwordVerified');
-    const storedPasswordHash = localStorage.getItem('passwordHash');
-    if (passwordVerified === 'true' && storedPasswordHash) {
-        localStorage.setItem('proxyAuthHash', storedPasswordHash);
-        cachedPasswordHash = storedPasswordHash;
-        return storedPasswordHash;
+    try {
+        const stored = localStorage.getItem(PASSWORD_CONFIG.localStorageKey);
+        if (stored) {
+            const parsed = JSON.parse(stored);
+            if (parsed.verified && parsed.passwordHash) {
+                const currentHash = window.__ENV__?.PASSWORD;
+                // 验证哈希是否仍与当前环境匹配（密码未更改）
+                if (!currentHash || parsed.passwordHash === currentHash) {
+                    localStorage.setItem('proxyAuthHash', parsed.passwordHash);
+                    cachedPasswordHash = parsed.passwordHash;
+                    return parsed.passwordHash;
+                }
+            }
+        }
+    } catch (e) {
+        // ignore parse errors
     }
     
     // 3. 尝试从用户输入的密码生成哈希

@@ -536,7 +536,7 @@ function renderDoubanCards(data, container) {
                 <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
                     <img src="${coverUrl}" alt="${safeTitle}"
                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
-                        onerror="handleDoubanCoverError(this, '${coverUrl.replace(/'/g, "\\'")}')"
+                        onerror="handleDoubanCoverErrorSync(this, '${coverUrl.replace(/'/g, "\\'")}')"
                         loading="lazy" referrerpolicy="no-referrer">
                     <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
                     <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">
@@ -788,24 +788,24 @@ function resetTagsToDefault() {
     showToast('已恢复默认标签', 'success');
 }
 
-// 處理豆瓣封面圖片加載失敗的錯誤
-// 使用代理作為備選方案，避免 referer 頭問題
-async function handleDoubanCoverError(imgElement, originalUrl) {
-    console.warn('豆瓣封面加载失败，尝试使用代理:', originalUrl);
+// 處理豆瓣封面圖片加載失敗的錯誤 - 同步版本（供 onerror 直接調用）
+function handleDoubanCoverErrorSync(imgElement, originalUrl) {
+    console.warn('豆瓣封面加载失败（同步 fallback），尝试使用代理:', originalUrl);
 
-    // 防止死循環 - 如果已經是代理URL就不再處理
     if (imgElement.dataset.usingProxy) {
-        console.error('代理也失败，设置占位图');
         imgElement.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"%3E%3Crect fill="%23222" width="300" height="450"/%3E%3Ctext x="50%25" y="50%25" fill="%23666" text-anchor="middle" dy=".3em" font-size="14"%3E图片加载失败%3C/text%3E%3C/svg%3E';
         imgElement.classList.add('object-contain');
         return;
     }
 
     try {
-        // 動態添加 auth 參數
-        const proxiedUrl = await window.ProxyAuth?.addAuthToProxyUrl ?
-            await window.ProxyAuth.addAuthToProxyUrl(PROXY_URL + encodeURIComponent(originalUrl)) :
-            PROXY_URL + encodeURIComponent(originalUrl);
+        // 直接從 localStorage 同步讀取已缓存的 hash
+        const storedHash = localStorage.getItem('passwordHash');
+        const proxyAuthHash = localStorage.getItem('proxyAuthHash');
+        const hash = proxyAuthHash || storedHash || null;
+        const timestamp = Date.now();
+        const authParams = hash ? `auth=${encodeURIComponent(hash)}&t=${timestamp}` : '';
+        const proxiedUrl = PROXY_URL + encodeURIComponent(originalUrl) + (authParams ? `?${authParams}` : '');
 
         imgElement.dataset.usingProxy = 'true';
         imgElement.src = proxiedUrl;
@@ -815,3 +815,31 @@ async function handleDoubanCoverError(imgElement, originalUrl) {
         imgElement.classList.add('object-contain');
     }
 }
+
+// 異步版本（通过 window 暴露，供需要 async 的場景使用）
+async function handleDoubanCoverErrorAsync(imgElement, originalUrl) {
+    console.warn('豆瓣封面加载失败，尝试使用代理:', originalUrl);
+
+    if (imgElement.dataset.usingProxy) {
+        imgElement.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"%3E%3Crect fill="%23222" width="300" height="450"/%3E%3Ctext x="50%25" y="50%25" fill="%23666" text-anchor="middle" dy=".3em" font-size="14"%3E图片加载失败%3C/text%3E%3C/svg%3E';
+        imgElement.classList.add('object-contain');
+        return;
+    }
+
+    try {
+        const hash = await window.ProxyAuth?.getPasswordHash?.();
+        const timestamp = Date.now();
+        const authParams = hash ? `auth=${encodeURIComponent(hash)}&t=${timestamp}` : '';
+        const proxiedUrl = PROXY_URL + encodeURIComponent(originalUrl) + (authParams ? `?${authParams}` : '');
+
+        imgElement.dataset.usingProxy = 'true';
+        imgElement.src = proxiedUrl;
+    } catch (error) {
+        console.error('代理URL生成失败:', error);
+        imgElement.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"%3E%3Crect fill="%23222" width="300" height="450"/%3E%3Ctext x="50%25" y="50%25" fill="%23666" text-anchor="middle" dy=".3em" font-size="14"%3E图片加载失败%3C/text%3E%3C/svg%3E';
+        imgElement.classList.add('object-contain');
+    }
+}
+
+// 暴露到 window 供 async 場景使用
+window.handleDoubanCoverErrorAsync = handleDoubanCoverErrorAsync;

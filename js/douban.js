@@ -890,22 +890,5 @@ async function searchAllAPIs(query) {
     return null;
 }
 
-// 暴露到 window 供測試使用
-window.searchSingleAPI = async function(query) {
-    if (!query || !selectedAPIs || selectedAPIs.length === 0) return null;
-
-    for (const apiKey of selectedAPIs) {
-        try {
-            const results = await searchSingleAPI(query, apiKey);
-            if (results && results.length > 0 && results[0].vod_pic) {
-                return results[0].vod_pic;
-            }
-        } catch (error) {
-            console.warn(`window.searchSingleAPI 失敗 (${apiKey}):`, error.message);
-        }
-    }
-    return null;
-};
-
 // 暴露到 window 供 onerror 使用
 window.handleDoubanCoverErrorAsync = handleDoubanCoverErrorAsync;

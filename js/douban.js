@@ -536,7 +536,7 @@ function renderDoubanCards(data, container) {
                 <div class="relative w-full aspect-[2/3] overflow-hidden cursor-pointer" onclick="fillAndSearchWithDouban('${safeTitle}')">
                     <img src="${coverUrl}" alt="${safeTitle}"
                         class="w-full h-full object-cover transition-transform duration-500 hover:scale-110"
-                        onerror="handleDoubanCoverErrorSync(this, '${coverUrl.replace(/'/g, "\\'")}')"
+                        onerror="handleDoubanCoverErrorAsync(this, '${coverUrl.replace(/'/g, "\\'")}', '${safeTitle.replace(/'/g, "\\'")}')"
                         loading="lazy" referrerpolicy="no-referrer">
                     <div class="absolute inset-0 bg-gradient-to-t from-black to-transparent opacity-60"></div>
                     <div class="absolute bottom-2 left-2 bg-black/70 text-white text-xs px-2 py-1 rounded-sm">
@@ -788,58 +788,114 @@ function resetTagsToDefault() {
     showToast('已恢复默认标签', 'success');
 }
 
-// 處理豆瓣封面圖片加載失敗的錯誤 - 同步版本（供 onerror 直接調用）
+// 處理豆瓣封面圖片加載失敗的錯誤 - 同步版本（已停用，保留作為相容性）
 function handleDoubanCoverErrorSync(imgElement, originalUrl) {
-    console.warn('豆瓣封面加载失败（同步 fallback），尝试使用代理:', originalUrl);
+    // 不再直接處理，統一由 async 版本處理
+}
 
-    if (imgElement.dataset.usingProxy) {
-        imgElement.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"%3E%3Crect fill="%23222" width="300" height="450"/%3E%3Ctext x="50%25" y="50%25" fill="%23666" text-anchor="middle" dy=".3em" font-size="14"%3E图片加载失败%3C/text%3E%3C/svg%3E';
-        imgElement.classList.add('object-contain');
-        return;
+// 異步版本：嘗試代理 → 再用標題搜索視頻 API 取備選封面
+async function handleDoubanCoverErrorAsync(imgElement, originalUrl, title) {
+    console.warn('豆瓣封面加载失败，尝试备选方案:', originalUrl);
+
+    const stage = imgElement.dataset.coverStage || 'original';
+
+    // Stage 1: 原始 URL 失敗，嘗試代理
+    if (stage === 'original') {
+        imgElement.dataset.coverStage = 'proxy';
+        try {
+            const storedHash = localStorage.getItem('passwordHash');
+            const proxyAuthHash = localStorage.getItem('proxyAuthHash');
+            const hash = proxyAuthHash || storedHash || null;
+            const timestamp = Date.now();
+            const authParams = hash ? `auth=${encodeURIComponent(hash)}&t=${timestamp}` : '';
+            const proxiedUrl = PROXY_URL + encodeURIComponent(originalUrl) + (authParams ? `?${authParams}` : '');
+            imgElement.src = proxiedUrl;
+            return;
+        } catch (error) {
+            console.error('代理URL生成失败:', error);
+        }
     }
 
+    // Stage 2: 代理也失敗，嘗試用標題搜索視頻 API 取備選封面
+    if (stage === 'proxy') {
+        imgElement.dataset.coverStage = 'search';
+        if (!title) {
+            showPlaceholder(imgElement);
+            return;
+        }
+        try {
+            // 使用 selectedAPIs 中的第一個可用 API 搜索
+            const results = await searchSingleAPI(title, selectedAPIs[0]);
+            if (results && results.length > 0 && results[0].vod_pic) {
+                console.warn('使用搜索結果作為備選封面:', results[0].vod_pic);
+                imgElement.src = results[0].vod_pic;
+                return;
+            }
+        } catch (error) {
+            console.warn('搜索備選封面失敗:', error);
+        }
+    }
+
+    // Stage 3: 搜索也失敗，顯示占位圖
+    showPlaceholder(imgElement);
+}
+
+function showPlaceholder(imgElement) {
+    imgElement.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"%3E%3Crect fill="%23222" width="300" height="450"/%3E%3Ctext x="50%25" y="50%25" fill="%23666" text-anchor="middle" dy=".3em" font-size="14"%3E图片加载失败%3C/text%3E%3C/svg%3E';
+    imgElement.classList.add('object-contain');
+}
+
+// 單一 API 搜索（供備選封面使用）
+async function searchSingleAPI(query, apiKey) {
+    if (!query || !apiKey) return [];
+
     try {
-        // 直接從 localStorage 同步讀取已缓存的 hash
-        const storedHash = localStorage.getItem('passwordHash');
-        const proxyAuthHash = localStorage.getItem('proxyAuthHash');
-        const hash = proxyAuthHash || storedHash || null;
+        let apiUrl, apiBaseUrl, apiName;
+        const customIndex = apiKey.replace('custom_', '');
+
+        if (apiKey.startsWith('custom_')) {
+            const customApi = getCustomApiInfo(customIndex);
+            if (!customApi) return [];
+            apiBaseUrl = customApi.url;
+            apiUrl = apiBaseUrl + API_CONFIG.search.path + encodeURIComponent(query);
+            apiName = customApi.name;
+        } else {
+            if (!API_SITES[apiKey]) return [];
+            apiBaseUrl = API_SITES[apiKey].api;
+            apiUrl = apiBaseUrl + API_CONFIG.search.path + encodeURIComponent(query);
+            apiName = API_SITES[apiKey].name;
+        }
+
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
+
+        const hash = localStorage.getItem('proxyAuthHash') || localStorage.getItem('passwordHash') || null;
         const timestamp = Date.now();
         const authParams = hash ? `auth=${encodeURIComponent(hash)}&t=${timestamp}` : '';
-        const proxiedUrl = PROXY_URL + encodeURIComponent(originalUrl) + (authParams ? `?${authParams}` : '');
+        const proxiedUrl = PROXY_URL + encodeURIComponent(apiUrl) + (authParams ? `?${authParams}` : '');
 
-        imgElement.dataset.usingProxy = 'true';
-        imgElement.src = proxiedUrl;
+        const response = await fetch(proxiedUrl, {
+            headers: API_CONFIG.search.headers,
+            signal: controller.signal
+        });
+
+        clearTimeout(timeoutId);
+        if (!response.ok) return [];
+
+        const data = await response.json();
+        if (!data || !data.list || !Array.isArray(data.list) || data.list.length === 0) return [];
+
+        // 回傳第一個結果的 vod_pic
+        return data.list.map(item => ({
+            ...item,
+            source_name: apiName,
+            source_code: apiKey
+        }));
     } catch (error) {
-        console.error('代理URL生成失败:', error);
-        imgElement.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"%3E%3Crect fill="%23222" width="300" height="450"/%3E%3Ctext x="50%25" y="50%25" fill="%23666" text-anchor="middle" dy=".3em" font-size="14"%3E图片加载失败%3C/text%3E%3C/svg%3E';
-        imgElement.classList.add('object-contain');
+        console.warn(`備選封面搜索失敗 (${apiKey}):`, error.message);
+        return [];
     }
 }
 
-// 異步版本（通过 window 暴露，供需要 async 的場景使用）
-async function handleDoubanCoverErrorAsync(imgElement, originalUrl) {
-    console.warn('豆瓣封面加载失败，尝试使用代理:', originalUrl);
-
-    if (imgElement.dataset.usingProxy) {
-        imgElement.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"%3E%3Crect fill="%23222" width="300" height="450"/%3E%3Ctext x="50%25" y="50%25" fill="%23666" text-anchor="middle" dy=".3em" font-size="14"%3E图片加载失败%3C/text%3E%3C/svg%3E';
-        imgElement.classList.add('object-contain');
-        return;
-    }
-
-    try {
-        const hash = await window.ProxyAuth?.getPasswordHash?.();
-        const timestamp = Date.now();
-        const authParams = hash ? `auth=${encodeURIComponent(hash)}&t=${timestamp}` : '';
-        const proxiedUrl = PROXY_URL + encodeURIComponent(originalUrl) + (authParams ? `?${authParams}` : '');
-
-        imgElement.dataset.usingProxy = 'true';
-        imgElement.src = proxiedUrl;
-    } catch (error) {
-        console.error('代理URL生成失败:', error);
-        imgElement.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 450"%3E%3Crect fill="%23222" width="300" height="450"/%3E%3Ctext x="50%25" y="50%25" fill="%23666" text-anchor="middle" dy=".3em" font-size="14"%3E图片加载失败%3C/text%3E%3C/svg%3E';
-        imgElement.classList.add('object-contain');
-    }
-}
-
-// 暴露到 window 供 async 場景使用
+// 暴露到 window 供 onerror 使用
 window.handleDoubanCoverErrorAsync = handleDoubanCoverErrorAsync;

@@ -793,50 +793,26 @@ function handleDoubanCoverErrorSync(imgElement, originalUrl) {
     // 不再直接處理，統一由 async 版本處理
 }
 
-// 異步版本：嘗試代理 → 再用標題搜索視頻 API 取備選封面
+// 異步版本：原始 URL 失敗時，用標題搜索視頻 API 取備選封面
 async function handleDoubanCoverErrorAsync(imgElement, originalUrl, title) {
     console.warn('豆瓣封面加载失败，尝试备选方案:', originalUrl);
 
-    const stage = imgElement.dataset.coverStage || 'original';
-
-    // Stage 1: 原始 URL 失敗，嘗試代理
-    if (stage === 'original') {
-        imgElement.dataset.coverStage = 'proxy';
-        try {
-            const storedHash = localStorage.getItem('passwordHash');
-            const proxyAuthHash = localStorage.getItem('proxyAuthHash');
-            const hash = proxyAuthHash || storedHash || null;
-            const timestamp = Date.now();
-            const authParams = hash ? `auth=${encodeURIComponent(hash)}&t=${timestamp}` : '';
-            const proxiedUrl = PROXY_URL + encodeURIComponent(originalUrl) + (authParams ? `?${authParams}` : '');
-            imgElement.src = proxiedUrl;
-            return;
-        } catch (error) {
-            console.error('代理URL生成失败:', error);
-        }
+    imgElement.dataset.coverStage = 'search';
+    if (!title) {
+        showPlaceholder(imgElement);
+        return;
     }
-
-    // Stage 2: 代理也失敗，嘗試用標題搜索視頻 API 取備選封面
-    if (stage === 'proxy') {
-        imgElement.dataset.coverStage = 'search';
-        if (!title) {
-            showPlaceholder(imgElement);
+    try {
+        const vodPic = await searchAllAPIs(title);
+        if (vodPic) {
+            console.warn('使用搜索結果作為備選封面:', vodPic);
+            imgElement.src = vodPic;
             return;
         }
-        try {
-            // 使用 selectedAPIs 中的第一個可用 API 搜索
-            const results = await searchSingleAPI(title, selectedAPIs[0]);
-            if (results && results.length > 0 && results[0].vod_pic) {
-                console.warn('使用搜索結果作為備選封面:', results[0].vod_pic);
-                imgElement.src = results[0].vod_pic;
-                return;
-            }
-        } catch (error) {
-            console.warn('搜索備選封面失敗:', error);
-        }
+    } catch (error) {
+        console.warn('搜索備選封面失敗:', error);
     }
 
-    // Stage 3: 搜索也失敗，顯示占位圖
     showPlaceholder(imgElement);
 }
 
@@ -896,6 +872,40 @@ async function searchSingleAPI(query, apiKey) {
         return [];
     }
 }
+
+// 嘗試多個 API 直到找到有效的 vod_pic
+async function searchAllAPIs(query) {
+    if (!query || !selectedAPIs || selectedAPIs.length === 0) return null;
+
+    for (const apiKey of selectedAPIs) {
+        try {
+            const results = await searchSingleAPI(query, apiKey);
+            if (results && results.length > 0 && results[0].vod_pic) {
+                return results[0].vod_pic;
+            }
+        } catch (error) {
+            console.warn(`搜索備選封面失敗 (${apiKey}):`, error.message);
+        }
+    }
+    return null;
+}
+
+// 暴露到 window 供測試使用
+window.searchSingleAPI = async function(query) {
+    if (!query || !selectedAPIs || selectedAPIs.length === 0) return null;
+
+    for (const apiKey of selectedAPIs) {
+        try {
+            const results = await searchSingleAPI(query, apiKey);
+            if (results && results.length > 0 && results[0].vod_pic) {
+                return results[0].vod_pic;
+            }
+        } catch (error) {
+            console.warn(`window.searchSingleAPI 失敗 (${apiKey}):`, error.message);
+        }
+    }
+    return null;
+};
 
 // 暴露到 window 供 onerror 使用
 window.handleDoubanCoverErrorAsync = handleDoubanCoverErrorAsync;
